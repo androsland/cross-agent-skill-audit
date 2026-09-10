@@ -287,6 +287,18 @@ def inventory_skill(
     }
 
 
+def normalized_invocation_mode(skill: dict[str, Any]) -> str:
+    family = skill["platform_family"]
+    if family == "claude":
+        return "explicit-only" if skill["claude_explicit_only"] else "automatic"
+    if family == "codex":
+        implicit = skill["codex_implicit_invocation"]
+        if implicit is None:
+            return "unknown"
+        return "automatic" if implicit else "explicit-only"
+    return "unknown"
+
+
 def grouped(skills: list[dict[str, Any]], field: str) -> dict[str, list[dict[str, Any]]]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for skill in skills:
@@ -301,6 +313,9 @@ def compact_skill(skill: dict[str, Any]) -> dict[str, Any]:
         "resolved_path": skill["resolved_path"],
         "platform_scope": skill["platform_scope"],
         "content_sha256": skill["content_sha256"],
+        "invocation_mode": normalized_invocation_mode(skill),
+        "claude_explicit_only": skill["claude_explicit_only"],
+        "codex_implicit_invocation": skill["codex_implicit_invocation"],
     }
 
 
@@ -330,11 +345,14 @@ def analyze(skills: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
             body_hashes = {item["body_sha256"] for item in items}
             metadata_hashes = {item["portable_metadata_sha256"] for item in items}
             platform_families = {item["platform_family"] for item in items}
+            invocation_modes = {normalized_invocation_mode(item) for item in items}
             entry = {"name": name, "skills": [compact_skill(i) for i in items]}
             if (
                 len(body_hashes) == 1
                 and len(metadata_hashes) == 1
                 and len(platform_families) > 1
+                and len(invocation_modes) == 1
+                and "unknown" not in invocation_modes
             ):
                 platform_metadata_variants.append(entry)
             else:

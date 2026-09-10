@@ -27,6 +27,8 @@ def skill_record(
     body: str,
     platform_scope: str = "test",
     extra_frontmatter: dict[str, str] | None = None,
+    claude_explicit_only: bool = False,
+    codex_implicit_invocation: bool | None = None,
 ) -> dict:
     frontmatter = {"name": name, "description": description}
     frontmatter.update(extra_frontmatter or {})
@@ -51,6 +53,8 @@ def skill_record(
             )
         ),
         "platform_family": inventory.platform_family(platform_scope),
+        "claude_explicit_only": claude_explicit_only,
+        "codex_implicit_invocation": codex_implicit_invocation,
         "broken_relative_references": [],
     }
 
@@ -67,7 +71,13 @@ class InventoryTests(unittest.TestCase):
     def test_safe_cross_platform_metadata_variant_is_not_collision(self) -> None:
         body = "Shared instructions"
         left = skill_record(
-            "example", "Same", "C:/codex/example/SKILL.md", "A", body, "codex-user"
+            "example",
+            "Same",
+            "C:/codex/example/SKILL.md",
+            "A",
+            body,
+            "codex-user",
+            codex_implicit_invocation=False,
         )
         right = skill_record(
             "example",
@@ -77,6 +87,7 @@ class InventoryTests(unittest.TestCase):
             body,
             "claude-user",
             {"disable-model-invocation": "true"},
+            claude_explicit_only=True,
         )
         result = inventory.analyze([left, right], 0.42)
         self.assertEqual(result["same_name_different_content"], [])
@@ -89,6 +100,31 @@ class InventoryTests(unittest.TestCase):
         )
         right = skill_record(
             "example", "Two", "C:/claude/example/SKILL.md", "B", body, "claude-user"
+        )
+        result = inventory.analyze([left, right], 0.42)
+        self.assertEqual(len(result["same_name_different_content"]), 1)
+        self.assertEqual(result["same_body_platform_metadata_variants"], [])
+
+    def test_same_body_opposite_invocation_modes_collide(self) -> None:
+        body = "Shared instructions"
+        left = skill_record(
+            "example",
+            "Same",
+            "C:/codex/example/SKILL.md",
+            "A",
+            body,
+            "codex-user",
+            codex_implicit_invocation=True,
+        )
+        right = skill_record(
+            "example",
+            "Same",
+            "C:/claude/example/SKILL.md",
+            "B",
+            body,
+            "claude-user",
+            {"disable-model-invocation": "true"},
+            claude_explicit_only=True,
         )
         result = inventory.analyze([left, right], 0.42)
         self.assertEqual(len(result["same_name_different_content"]), 1)
