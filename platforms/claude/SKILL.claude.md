@@ -1,6 +1,6 @@
 ---
 name: skill-audit
-description: Audit filesystem-based Codex and Claude Code skills for duplicate installations, name collisions, overlapping triggers, contradictory behavior, broken references, and portability problems. Use only when explicitly invoked; default to a read-only report.
+description: Audit filesystem-based Codex and Claude Code skills for duplicate installations, name collisions, overlapping triggers, contradictory behavior, missing Markdown-linked files, and portability problems. Use only when explicitly invoked; default to a read-only report.
 disable-model-invocation: true
 argument-hint: "[optional extra skill roots]"
 ---
@@ -24,7 +24,7 @@ Audit the installed skill collection as a system. Do not infer that a same-name 
    - same-name, different-content collisions;
    - exact copies at distinct real paths;
    - heuristic trigger-overlap candidates;
-   - missing relative references;
+   - missing relative files referenced by Markdown links;
    - platform-specific metadata or instructions.
 3. For each plausible trigger or behavioral conflict, read the complete `SKILL.md` files involved. Descriptions and similarity scores are leads, not proof.
 4. Test each claimed collision with at least one realistic ambiguous request. State which skill should win and why.
@@ -65,4 +65,4 @@ This audit must handle at least these unrelated cases:
 
 It must not flag a legitimate shared source linked into both Codex and Claude Code roots as two conflicting copies.
 
-It cannot observe built-in binary skills, cloud/API-uploaded skills, actual historical usage, runtime-generated instructions, or non-skill commands/hooks/agents unless those surfaces are separately supplied. Name those blind spots in every report.
+It cannot observe built-in binary skills, cloud/API-uploaded skills, actual historical usage, runtime-generated instructions, relative paths mentioned only in prose or code spans, or non-skill commands/hooks/agents unless those surfaces are separately supplied. Name those blind spots in every report.

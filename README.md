@@ -4,9 +4,10 @@ A read-only inventory and analysis workflow for filesystem-based Codex and Claud
 Code skills.
 
 It finds same-name collisions, exact copies, overlapping trigger candidates,
-broken relative references, explicit-versus-automatic invocation differences,
-and platform portability problems. Metadata similarity is treated as a lead; the
-agent must read the relevant skill bodies before confirming a behavioral conflict.
+missing relative files referenced by Markdown links, explicit-versus-automatic
+invocation differences, and platform portability problems. Metadata similarity is
+treated as a lead; the agent must read the relevant skill bodies before confirming
+a behavioral conflict.
 
 ## Safety model
 
@@ -27,7 +28,8 @@ Invoke it with `$skill-audit`.
 ### Claude Code
 
 Place the repository in `~/.claude/skills/skill-audit`. To keep it manual-only,
-either select `user-invocable-only` from Claude Code's `/skills` menu, or install
+either use Claude Code's `/skills` menu to hide it from Claude while keeping it
+user-invocable (`user-invocable-only` in `skillOverrides`), or install
 `platforms/claude/SKILL.claude.md` as the directory's `SKILL.md`.
 
 Invoke it with `/skill-audit`.
@@ -60,8 +62,9 @@ with the same behavior must not be called a conflict solely because it appears i
 two roots.
 
 The audit cannot observe built-in binary skills, cloud/API-uploaded skills, actual
-historical usage, runtime-generated instructions, or non-skill commands, hooks,
-and agents unless those surfaces are separately supplied.
+historical usage, runtime-generated instructions, relative paths mentioned only in
+prose or code spans, or non-skill commands, hooks, and agents unless those surfaces
+are separately supplied.
 
 ## Inspiration
 

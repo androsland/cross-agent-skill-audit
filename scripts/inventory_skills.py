@@ -21,6 +21,10 @@ STOP_WORDS = {
     "claude", "codex", "does", "for", "from", "into", "only", "skill",
     "skills", "that", "the", "their", "this", "use", "user", "when", "with",
 }
+PLATFORM_VARIANT_KEYS = {
+    "argument-hint",
+    "disable-model-invocation",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,6 +67,14 @@ def default_roots(home: Path, cwd: Path) -> list[tuple[str, Path]]:
     ]
 
     current = cwd.resolve()
+    repository_root = current
+    while repository_root.parent != repository_root and not (
+        repository_root / ".git"
+    ).exists():
+        repository_root = repository_root.parent
+    if not (repository_root / ".git").exists():
+        repository_root = current
+
     while True:
         roots.extend(
             [
@@ -71,7 +83,7 @@ def default_roots(home: Path, cwd: Path) -> list[tuple[str, Path]]:
                 ("repo-claude", current / ".claude" / "skills"),
             ]
         )
-        if current.parent == current:
+        if current == repository_root:
             break
         current = current.parent
     return roots
@@ -98,7 +110,7 @@ def unique_roots(roots: Iterable[tuple[str, Path]]) -> list[tuple[str, Path]]:
     return result
 
 
-def find_skill_files(root: Path) -> Iterable[Path]:
+def find_skill_files(root: Path, warnings: list[str] | None = None) -> Iterable[Path]:
     seen_dirs: set[str] = set()
     pending = [root]
     while pending:
@@ -113,13 +125,19 @@ def find_skill_files(root: Path) -> Iterable[Path]:
 
         try:
             entries = list(os.scandir(directory))
-        except OSError:
+        except OSError as error:
+            if warnings is not None:
+                warnings.append(f"{directory}: cannot scan directory: {error}")
             continue
         for entry in entries:
-            if entry.name == "SKILL.md" and entry.is_file(follow_symlinks=True):
-                yield Path(entry.path)
-            elif entry.name not in SKIP_DIRS and entry.is_dir(follow_symlinks=True):
-                pending.append(Path(entry.path))
+            try:
+                if entry.name == "SKILL.md" and entry.is_file(follow_symlinks=True):
+                    yield Path(entry.path)
+                elif entry.name not in SKIP_DIRS and entry.is_dir(follow_symlinks=True):
+                    pending.append(Path(entry.path))
+            except OSError as error:
+                if warnings is not None:
+                    warnings.append(f"{entry.path}: cannot inspect entry: {error}")
 
 
 def unquote(value: str) -> str:
@@ -167,6 +185,10 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
 def markdown_relative_links(body: str) -> list[str]:
     links: list[str] = []
     for raw in re.findall(r"!?\[[^\]]*\]\(([^)]+)\)", body):
@@ -197,11 +219,32 @@ def trigger_tokens(skill: dict[str, Any]) -> set[str]:
     return {word for word in words if word not in STOP_WORDS}
 
 
-def inventory_skill(path: Path, platform: str, root: Path) -> dict[str, Any]:
+def platform_family(platform: str) -> str:
+    lowered = platform.lower()
+    for family in ("claude", "codex", "shared"):
+        if family in lowered:
+            return family
+    return lowered
+
+
+def inventory_skill(
+    path: Path,
+    platform: str,
+    root: Path,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
     stat = path.stat()
     if stat.st_size > MAX_SKILL_BYTES:
         raise ValueError(f"SKILL.md exceeds {MAX_SKILL_BYTES} bytes")
-    text = path.read_text(encoding="utf-8", errors="replace")
+    content = path.read_bytes()
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        if warnings is not None:
+            warnings.append(
+                f"{path}: invalid UTF-8 at byte {error.start}; metadata decoded with replacement characters"
+            )
+        text = content.decode("utf-8", errors="replace")
     frontmatter, body = parse_frontmatter(text)
     name = frontmatter.get("name") or path.parent.name
     description = frontmatter.get("description", "")
@@ -223,8 +266,20 @@ def inventory_skill(path: Path, platform: str, root: Path) -> dict[str, Any]:
         "root": str(root),
         "path": str(path.absolute()),
         "resolved_path": str(path.resolve()),
-        "content_sha256": sha256(text),
+        "content_sha256": sha256_bytes(content),
         "body_sha256": sha256(body),
+        "portable_metadata_sha256": sha256(
+            json.dumps(
+                {
+                    key: value
+                    for key, value in frontmatter.items()
+                    if key not in PLATFORM_VARIANT_KEYS
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        ),
+        "platform_family": platform_family(platform),
         "bytes": stat.st_size,
         "claude_explicit_only": claude_explicit,
         "codex_implicit_invocation": codex_implicit,
@@ -273,8 +328,14 @@ def analyze(skills: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
         hashes = {item["content_sha256"] for item in items}
         if len(realpaths) > 1 and len(hashes) > 1:
             body_hashes = {item["body_sha256"] for item in items}
+            metadata_hashes = {item["portable_metadata_sha256"] for item in items}
+            platform_families = {item["platform_family"] for item in items}
             entry = {"name": name, "skills": [compact_skill(i) for i in items]}
-            if len(body_hashes) == 1:
+            if (
+                len(body_hashes) == 1
+                and len(metadata_hashes) == 1
+                and len(platform_families) > 1
+            ):
                 platform_metadata_variants.append(entry)
             else:
                 name_collisions.append(entry)
@@ -311,7 +372,7 @@ def analyze(skills: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
         {
             "name": skill["name"],
             "path": skill["path"],
-            "references": skill["broken_relative_references"],
+                "references": skill["broken_relative_references"],
         }
         for skill in skills
         if skill["broken_relative_references"]
@@ -323,7 +384,7 @@ def analyze(skills: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
         "same_name_different_content": name_collisions,
         "same_body_platform_metadata_variants": platform_metadata_variants,
         "trigger_overlap_candidates": overlap_candidates,
-        "missing_relative_references": broken_refs,
+        "missing_markdown_references": broken_refs,
     }
 
 
@@ -339,7 +400,7 @@ def render_summary(report: dict[str, Any]) -> str:
         f"Same-name different-content collisions: {len(analysis['same_name_different_content'])}",
         f"Same-body platform metadata variants: {len(analysis['same_body_platform_metadata_variants'])}",
         f"Trigger-overlap candidates: {len(analysis['trigger_overlap_candidates'])}",
-        f"Skills with missing relative references: {len(analysis['missing_relative_references'])}",
+        f"Skills with missing Markdown references: {len(analysis['missing_markdown_references'])}",
     ]
     if report["warnings"]:
         lines.append("\nWarnings:")
@@ -404,12 +465,12 @@ def main() -> int:
             continue
         roots_scanned.append({"platform": platform, "path": str(root)})
         try:
-            for skill_path in find_skill_files(root):
+            for skill_path in find_skill_files(root, warnings):
                 if len(skills) >= args.max_skills:
                     warnings.append(f"stopped after --max-skills={args.max_skills}")
                     break
                 try:
-                    skills.append(inventory_skill(skill_path, platform, root))
+                    skills.append(inventory_skill(skill_path, platform, root, warnings))
                 except (OSError, ValueError) as error:
                     warnings.append(f"{skill_path}: {error}")
         except OSError as error:
@@ -435,6 +496,7 @@ def main() -> int:
             "commands, hooks, and agents outside SKILL.md",
             "whether a skill found only in a plugin cache is currently active",
             "behavioral conflicts not visible in metadata until bodies are reviewed",
+            "relative file references expressed only as prose or backticked paths",
         ],
     }
     if args.format == "json":
