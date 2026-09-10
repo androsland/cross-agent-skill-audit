@@ -1,0 +1,6 @@
+interface:
+  display_name: "Skill Audit"
+  short_description: "Audit Codex and Claude Code skill collections"
+  default_prompt: "Use $skill-audit to audit my Codex and Claude Code skills without changing them."
+policy:
+  allow_implicit_invocation: false
