@@ -141,7 +141,7 @@ def find_skill_files(root: Path, warnings: list[str] | None = None) -> Iterable[
 
 
 def unquote(value: str) -> str:
-    value = value.strip()
+    value = strip_inline_comment(value).strip()
     if len(value) >= 2 and value[0] == value[-1] == '"':
         try:
             return str(json.loads(value))
@@ -150,6 +150,68 @@ def unquote(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] == "'":
         return value[1:-1].replace("''", "'")
     return value
+
+
+def strip_inline_comment(value: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if quote == '"' and character == "\\":
+            escaped = True
+            continue
+        if character in {'"', "'"}:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+            continue
+        if character == "#" and quote is None and (
+            index == 0 or value[index - 1].isspace()
+        ):
+            return value[:index].rstrip()
+    return value
+
+
+def yaml_scalar_values(text: str, path: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    parents: list[tuple[int, str]] = []
+    for raw_line in text.replace("\r\n", "\n").splitlines():
+        line = strip_inline_comment(raw_line).rstrip()
+        if not line.strip() or line.lstrip().startswith("---"):
+            continue
+        field = re.match(r"^( *)([A-Za-z0-9_-]+):[ \t]*(.*)$", line)
+        if not field:
+            continue
+        indent, key, value = len(field.group(1)), field.group(2), field.group(3)
+        while parents and parents[-1][0] >= indent:
+            parents.pop()
+        current_path = tuple(parent_key for _, parent_key in parents) + (key,)
+        if value:
+            if current_path == path:
+                values.append(unquote(value))
+        else:
+            parents.append((indent, key))
+    return values
+
+
+def yaml_boolean(
+    text: str,
+    path: tuple[str, ...],
+    default: bool | None,
+    source: Path,
+    warnings: list[str] | None,
+) -> bool | None:
+    values = yaml_scalar_values(text, path)
+    if not values:
+        return default
+    if len(values) != 1 or values[0].lower() not in {"true", "false"}:
+        if warnings is not None:
+            warnings.append(f"{source}: ambiguous boolean policy at {'.'.join(path)}")
+        return None
+    return values[0].lower() == "true"
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -201,16 +263,25 @@ def markdown_relative_links(body: str) -> list[str]:
     return links
 
 
-def codex_implicit_policy(skill_dir: Path) -> bool | None:
+def codex_implicit_policy(
+    skill_dir: Path, warnings: list[str] | None = None
+) -> bool | None:
     config = skill_dir / "agents" / "openai.yaml"
     if not config.is_file():
         return None
     try:
         text = config.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except OSError as error:
+        if warnings is not None:
+            warnings.append(f"{config}: cannot read Codex policy: {error}")
         return None
-    match = re.search(r"(?m)^\s*allow_implicit_invocation:\s*(true|false)\s*$", text, re.I)
-    return match.group(1).lower() == "true" if match else None
+    return yaml_boolean(
+        text,
+        ("policy", "allow_implicit_invocation"),
+        default=None,
+        source=config,
+        warnings=warnings,
+    )
 
 
 def trigger_tokens(skill: dict[str, Any]) -> set[str]:
@@ -246,11 +317,22 @@ def inventory_skill(
             )
         text = content.decode("utf-8", errors="replace")
     frontmatter, body = parse_frontmatter(text)
+    normalized = text.replace("\r\n", "\n")
+    frontmatter_match = re.match(
+        r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", normalized, re.S
+    )
+    frontmatter_text = frontmatter_match.group(1) if frontmatter_match else ""
     name = frontmatter.get("name") or path.parent.name
     description = frontmatter.get("description", "")
     when_to_use = frontmatter.get("when_to_use", "")
-    claude_explicit = frontmatter.get("disable-model-invocation", "").lower() == "true"
-    codex_implicit = codex_implicit_policy(path.parent)
+    claude_explicit = yaml_boolean(
+        frontmatter_text,
+        ("disable-model-invocation",),
+        default=False,
+        source=path,
+        warnings=warnings,
+    )
+    codex_implicit = codex_implicit_policy(path.parent, warnings)
 
     broken_refs = []
     for link in markdown_relative_links(body):
@@ -290,7 +372,10 @@ def inventory_skill(
 def normalized_invocation_mode(skill: dict[str, Any]) -> str:
     family = skill["platform_family"]
     if family == "claude":
-        return "explicit-only" if skill["claude_explicit_only"] else "automatic"
+        explicit = skill["claude_explicit_only"]
+        if explicit is None:
+            return "unknown"
+        return "explicit-only" if explicit else "automatic"
     if family == "codex":
         implicit = skill["codex_implicit_invocation"]
         if implicit is None:

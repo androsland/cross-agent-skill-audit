@@ -189,6 +189,45 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(result["exact_copies_at_distinct_realpaths"], [])
             self.assertEqual(len(warnings), 2)
 
+    def test_codex_policy_uses_exact_path_and_allows_inline_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            skill_dir = Path(temporary)
+            agents_dir = skill_dir / "agents"
+            agents_dir.mkdir()
+            config = agents_dir / "openai.yaml"
+            config.write_text(
+                "interface:\n  allow_implicit_invocation: true\n"
+                "policy:\n  allow_implicit_invocation: false # manual-only\n",
+                encoding="utf-8",
+            )
+            self.assertIs(inventory.codex_implicit_policy(skill_dir), False)
+
+            config.write_text(
+                "interface:\n  allow_implicit_invocation: false\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(inventory.codex_implicit_policy(skill_dir))
+
+    def test_claude_policy_uses_top_level_key_and_allows_inline_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill_dir = root / "example"
+            skill_dir.mkdir()
+            skill_path = skill_dir / "SKILL.md"
+            skill_path.write_text(
+                "---\nname: example\ndisable-model-invocation: true # manual-only\n---\nBody\n",
+                encoding="utf-8",
+            )
+            record = inventory.inventory_skill(skill_path, "claude-user", root)
+            self.assertIs(record["claude_explicit_only"], True)
+
+            skill_path.write_text(
+                "---\nname: example\nmetadata:\n  disable-model-invocation: true\n---\nBody\n",
+                encoding="utf-8",
+            )
+            record = inventory.inventory_skill(skill_path, "claude-user", root)
+            self.assertIs(record["claude_explicit_only"], False)
+
 
 if __name__ == "__main__":
     unittest.main()
