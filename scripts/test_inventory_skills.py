@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +31,7 @@ def skill_record(
     extra_frontmatter: dict[str, str] | None = None,
     claude_explicit_only: bool = False,
     codex_implicit_invocation: bool | None = None,
+    resolved_path: str | None = None,
 ) -> dict:
     frontmatter = {"name": name, "description": description}
     frontmatter.update(extra_frontmatter or {})
@@ -37,7 +40,7 @@ def skill_record(
         "description": description,
         "when_to_use": "",
         "path": path,
-        "resolved_path": path,
+        "resolved_path": resolved_path or path,
         "platform_scope": platform_scope,
         "content_sha256": inventory.sha256(content),
         "body_sha256": inventory.sha256(body),
@@ -89,7 +92,7 @@ class InventoryTests(unittest.TestCase):
             {"disable-model-invocation": "true"},
             claude_explicit_only=True,
         )
-        result = inventory.analyze([left, right], 0.42)
+        result = inventory.analyze([left, right], inventory.DEFAULT_SIMILARITY)
         self.assertEqual(result["same_name_different_content"], [])
         self.assertEqual(len(result["same_body_platform_metadata_variants"]), 1)
 
@@ -101,7 +104,7 @@ class InventoryTests(unittest.TestCase):
         right = skill_record(
             "example", "Two", "C:/claude/example/SKILL.md", "B", body, "claude-user"
         )
-        result = inventory.analyze([left, right], 0.42)
+        result = inventory.analyze([left, right], inventory.DEFAULT_SIMILARITY)
         self.assertEqual(len(result["same_name_different_content"]), 1)
         self.assertEqual(result["same_body_platform_metadata_variants"], [])
 
@@ -126,14 +129,14 @@ class InventoryTests(unittest.TestCase):
             {"disable-model-invocation": "true"},
             claude_explicit_only=True,
         )
-        result = inventory.analyze([left, right], 0.42)
+        result = inventory.analyze([left, right], inventory.DEFAULT_SIMILARITY)
         self.assertEqual(len(result["same_name_different_content"]), 1)
         self.assertEqual(result["same_body_platform_metadata_variants"], [])
 
     def test_different_bodies_with_same_name_collide(self) -> None:
         left = skill_record("example", "One", "C:/one/SKILL.md", "A", "First")
         right = skill_record("example", "Two", "C:/two/SKILL.md", "B", "Second")
-        result = inventory.analyze([left, right], 0.42)
+        result = inventory.analyze([left, right], inventory.DEFAULT_SIMILARITY)
         self.assertEqual(len(result["same_name_different_content"]), 1)
 
     def test_missing_relative_reference(self) -> None:
@@ -185,7 +188,7 @@ class InventoryTests(unittest.TestCase):
                 skill_path = skill_dir / "SKILL.md"
                 skill_path.write_bytes(b"---\nname: example\n---\n" + invalid_byte)
                 records.append(inventory.inventory_skill(skill_path, "test", root, warnings))
-            result = inventory.analyze(records, 0.42)
+            result = inventory.analyze(records, inventory.DEFAULT_SIMILARITY)
             self.assertEqual(result["exact_copies_at_distinct_realpaths"], [])
             self.assertEqual(len(warnings), 2)
 
@@ -227,6 +230,75 @@ class InventoryTests(unittest.TestCase):
             )
             record = inventory.inventory_skill(skill_path, "claude-user", root)
             self.assertIs(record["claude_explicit_only"], False)
+
+    def test_positive_analysis_categories(self) -> None:
+        shared_left = skill_record(
+            "shared-a",
+            "Shared",
+            "C:/logical-one/SKILL.md",
+            "shared-a",
+            "One",
+            resolved_path="C:/real/SKILL.md",
+        )
+        shared_right = skill_record(
+            "shared-b",
+            "Shared",
+            "C:/logical-two/SKILL.md",
+            "shared-b",
+            "Two",
+            resolved_path="C:/real/SKILL.md",
+        )
+        exact_left = skill_record(
+            "copy-a", "Copy", "C:/copy-a/SKILL.md", "identical", "One"
+        )
+        exact_right = skill_record(
+            "copy-b", "Copy", "C:/copy-b/SKILL.md", "identical", "Two"
+        )
+        overlap_left = skill_record(
+            "deploy-general",
+            "Deploy production website release",
+            "C:/deploy-general/SKILL.md",
+            "deploy-general",
+            "One",
+        )
+        overlap_right = skill_record(
+            "deploy-provider",
+            "Deploy production website release provider",
+            "C:/deploy-provider/SKILL.md",
+            "deploy-provider",
+            "Two",
+        )
+        result = inventory.analyze(
+            [
+                shared_left,
+                shared_right,
+                exact_left,
+                exact_right,
+                overlap_left,
+                overlap_right,
+            ],
+            inventory.DEFAULT_SIMILARITY,
+        )
+        self.assertEqual(len(result["same_realpath_installations"]), 1)
+        self.assertEqual(len(result["exact_copies_at_distinct_realpaths"]), 1)
+        self.assertEqual(len(result["trigger_overlap_candidates"]), 1)
+
+    def test_invalid_cli_options_exit_two(self) -> None:
+        cases = (
+            (["--root", "invalid"], "expected PLATFORM=PATH"),
+            (["--similarity", "1.1"], "--similarity must be between 0 and 1"),
+            (["--max-skills", "0"], "--max-skills must be positive"),
+        )
+        for arguments, expected_error in cases:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, str(MODULE_PATH), *arguments],
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(expected_error, result.stderr)
 
 
 if __name__ == "__main__":

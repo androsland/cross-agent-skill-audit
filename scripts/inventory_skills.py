@@ -15,6 +15,8 @@ from typing import Any, Iterable
 
 
 MAX_SKILL_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_SKILLS = 3000
+DEFAULT_SIMILARITY = 0.42
 SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "vendor", "__pycache__"}
 STOP_WORDS = {
     "about", "after", "agent", "agents", "also", "and", "are", "before",
@@ -52,10 +54,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--similarity",
         type=float,
-        default=0.42,
-        help="Jaccard threshold for trigger-overlap candidates (default: 0.42).",
+        default=DEFAULT_SIMILARITY,
+        help=(
+            "Jaccard threshold for trigger-overlap candidates "
+            f"(default: {DEFAULT_SIMILARITY})."
+        ),
     )
-    parser.add_argument("--max-skills", type=int, default=3000)
+    parser.add_argument("--max-skills", type=int, default=DEFAULT_MAX_SKILLS)
     return parser.parse_args()
 
 
